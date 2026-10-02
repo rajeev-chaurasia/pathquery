@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+
+# Corpora and run output, rebuilt by script/fetch_corpus.sh and the pipeline.
+# The committed measurements live in evidence/.
+/data/
+/runs/
