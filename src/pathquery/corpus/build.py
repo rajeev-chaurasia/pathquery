@@ -1,0 +1,157 @@
+"""Pooling HotpotQA's paragraphs into one corpus, and cutting the question set.
+
+Every question ships ten paragraphs, two of which hold its supporting
+sentences. Pooling them across the dataset gives a corpus where the right
+answer for one question is a distractor for thousands of others, which is the
+property that makes retrieval over it non-trivial.
+
+Two things are checked rather than assumed. Every paragraph a scored question
+depends on must be in the corpus, or evidence recall would be measuring which
+paragraphs the pooling happened to include. And a title that appears with two
+different bodies would make a citation ambiguous, so those are counted and
+reported rather than silently resolved to whichever arrived last.
+
+The train split is read in batches. It is 316 MB of parquet and expands to
+several gigabytes as Python objects, which is more than a laptop wants to hold
+to produce a few hundred thousand distinct paragraphs.
+"""
+
+from __future__ import annotations
+
+import json
+import random
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pyarrow.parquet as pq
+
+from pathquery.corpus.hotpot import Paragraph, read_split
+
+BATCH_ROWS = 2_000
+
+
+@dataclass(frozen=True)
+class CorpusSpec:
+    questions: int = 1_200
+    seed: int = 20261103
+    include_train_paragraphs: bool = True
+
+
+@dataclass
+class BuildReport:
+    paragraphs: int = 0
+    sentences: int = 0
+    questions: int = 0
+    bridge: int = 0
+    comparison: int = 0
+    title_conflicts: int = 0
+    missing_gold_paragraphs: int = 0
+    notes: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "paragraphs": self.paragraphs,
+            "sentences": self.sentences,
+            "questions": self.questions,
+            "bridge": self.bridge,
+            "comparison": self.comparison,
+            "title_conflicts": self.title_conflicts,
+            "missing_gold_paragraphs": self.missing_gold_paragraphs,
+            "notes": self.notes,
+        }
+
+
+def _add(pool: dict[str, tuple[str, ...]], title: str, sentences: tuple[str, ...]) -> bool:
+    """Record a paragraph, reporting whether the title already meant something else."""
+    existing = pool.get(title)
+    if existing is None:
+        pool[title] = sentences
+        return False
+    return existing != sentences
+
+
+def build_corpus(raw: Path, out: Path, spec: CorpusSpec) -> BuildReport:
+    out.mkdir(parents=True, exist_ok=True)
+    report = BuildReport()
+    pool: dict[str, tuple[str, ...]] = {}
+
+    questions = list(read_split(raw / "validation-00000-of-00001.parquet"))
+    for question in questions:
+        for paragraph in question.context:
+            if _add(pool, paragraph.title, paragraph.sentences):
+                report.title_conflicts += 1
+
+    if spec.include_train_paragraphs:
+        for shard in sorted(raw.glob("train-*.parquet")):
+            reader = pq.ParquetFile(shard)
+            for batch in reader.iter_batches(batch_size=BATCH_ROWS, columns=["context"]):
+                for row in batch.to_pylist():
+                    context = row["context"]
+                    for title, sentences in zip(
+                        context["title"], context["sentences"], strict=True
+                    ):
+                        if _add(pool, title, tuple(sentences)):
+                            report.title_conflicts += 1
+
+    rng = random.Random(spec.seed)
+    chosen = questions[:]
+    rng.shuffle(chosen)
+    chosen = sorted(chosen[: spec.questions], key=lambda q: q.question_id)
+
+    # The guarantee recall depends on. A gold paragraph outside the corpus
+    # would make the metric a statement about the pooling.
+    for question in chosen:
+        for fact in question.supporting:
+            if fact.document not in pool:
+                report.missing_gold_paragraphs += 1
+
+    with (out / "paragraphs.jsonl").open("w", encoding="utf-8") as handle:
+        for title in sorted(pool):
+            sentences = pool[title]
+            handle.write(json.dumps({"title": title, "sentences": list(sentences)}) + "\n")
+            report.sentences += len(sentences)
+    report.paragraphs = len(pool)
+
+    with (out / "questions.jsonl").open("w", encoding="utf-8") as handle:
+        for question in chosen:
+            handle.write(
+                json.dumps(
+                    {
+                        "id": question.question_id,
+                        "question": question.question,
+                        "answer": question.answer,
+                        "type": question.kind,
+                        "level": question.level,
+                        "supporting": [
+                            {"document": f.document, "sentence": f.sentence}
+                            for f in question.supporting
+                        ],
+                    }
+                )
+                + "\n"
+            )
+    report.questions = len(chosen)
+    report.bridge = sum(1 for q in chosen if q.kind == "bridge")
+    report.comparison = sum(1 for q in chosen if q.kind == "comparison")
+    if report.title_conflicts:
+        report.notes.append(
+            f"{report.title_conflicts} paragraphs arrived under a title that already meant "
+            "something else; the first body was kept"
+        )
+
+    (out / "manifest.json").write_text(
+        json.dumps({"spec": spec.__dict__, "report": report.as_dict()}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return report
+
+
+def load_paragraphs(path: Path) -> dict[str, Paragraph]:
+    paragraphs: dict[str, Paragraph] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            record = json.loads(line)
+            paragraphs[record["title"]] = Paragraph(
+                title=record["title"], sentences=tuple(record["sentences"])
+            )
+    return paragraphs

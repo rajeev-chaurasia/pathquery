@@ -45,9 +45,17 @@ plugins = ["pydantic.mypy"]
 files = ["src", "tests", "script", "evaluation"]
 
 [[tool.mypy.overrides]]
-# faiss is a SWIG extension and bm25s ships no stubs; the sentence-transformers
-# stubs are partial rather than absent.
-module = ["faiss", "bm25s", "bm25s.*", "sentence_transformers", "sentence_transformers.*"]
+# faiss is a SWIG extension, and bm25s and pyarrow ship no py.typed marker;
+# the sentence-transformers stubs are partial rather than absent.
+module = [
+    "bm25s",
+    "bm25s.*",
+    "faiss",
+    "pyarrow",
+    "pyarrow.*",
+    "sentence_transformers",
+    "sentence_transformers.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
