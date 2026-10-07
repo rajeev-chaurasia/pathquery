@@ -45,6 +45,7 @@ class BuildReport:
     bridge: int = 0
     comparison: int = 0
     title_conflicts: int = 0
+    scored_overrides: int = 0
     missing_gold_paragraphs: int = 0
     notes: list[str] = field(default_factory=list)
 
@@ -56,18 +57,36 @@ class BuildReport:
             "bridge": self.bridge,
             "comparison": self.comparison,
             "title_conflicts": self.title_conflicts,
+            "scored_overrides": self.scored_overrides,
             "missing_gold_paragraphs": self.missing_gold_paragraphs,
             "notes": self.notes,
         }
 
 
-def _add(pool: dict[str, tuple[str, ...]], title: str, sentences: tuple[str, ...]) -> bool:
-    """Record a paragraph, reporting whether the title already meant something else."""
+def _add(
+    pool: dict[str, tuple[str, ...]],
+    title: str,
+    sentences: tuple[str, ...],
+    *,
+    override: bool = False,
+) -> bool:
+    """Record a paragraph, reporting whether the title already meant something else.
+
+    `override` is for the paragraphs the scored questions carry with them. A
+    title can arrive with two different bodies, and when that happens the
+    question's own copy has to win: its supporting facts are sentence indices
+    into that copy, and resolving them against a different body points the
+    annotation at different text without anything failing.
+    """
     existing = pool.get(title)
     if existing is None:
         pool[title] = sentences
         return False
-    return existing != sentences
+    if existing == sentences:
+        return False
+    if override:
+        pool[title] = sentences
+    return True
 
 
 def build_corpus(raw: Path, out: Path, spec: CorpusSpec) -> BuildReport:
@@ -76,7 +95,15 @@ def build_corpus(raw: Path, out: Path, spec: CorpusSpec) -> BuildReport:
     pool: dict[str, tuple[str, ...]] = {}
 
     questions = list(read_split(raw / "validation-00000-of-00001.parquet"))
+    rng = random.Random(spec.seed)
+    shuffled = questions[:]
+    rng.shuffle(shuffled)
+    chosen = sorted(shuffled[: spec.questions], key=lambda q: q.question_id)
+    scored = {q.question_id for q in chosen}
+
     for question in questions:
+        if question.question_id in scored:
+            continue
         for paragraph in question.context:
             if _add(pool, paragraph.title, paragraph.sentences):
                 report.title_conflicts += 1
@@ -93,10 +120,12 @@ def build_corpus(raw: Path, out: Path, spec: CorpusSpec) -> BuildReport:
                         if _add(pool, title, tuple(sentences)):
                             report.title_conflicts += 1
 
-    rng = random.Random(spec.seed)
-    chosen = questions[:]
-    rng.shuffle(chosen)
-    chosen = sorted(chosen[: spec.questions], key=lambda q: q.question_id)
+    # Last, so they win any title that already meant something else.
+    for question in chosen:
+        for paragraph in question.context:
+            if _add(pool, paragraph.title, paragraph.sentences, override=True):
+                report.title_conflicts += 1
+                report.scored_overrides += 1
 
     # The guarantee recall depends on. A gold paragraph outside the corpus
     # would make the metric a statement about the pooling.
@@ -136,7 +165,8 @@ def build_corpus(raw: Path, out: Path, spec: CorpusSpec) -> BuildReport:
     if report.title_conflicts:
         report.notes.append(
             f"{report.title_conflicts} paragraphs arrived under a title that already meant "
-            "something else; the first body was kept"
+            f"something else; the first body was kept except for {report.scored_overrides} "
+            "where a scored question carried its own"
         )
 
     (out / "manifest.json").write_text(
