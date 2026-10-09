@@ -1,0 +1,36 @@
+{
+  "label": "single-hop",
+  "paragraphs_k": 10,
+  "all": {
+    "questions": 1200,
+    "recall_at_2": 0.33688,
+    "recall_at_10": 0.56039,
+    "precision_at_10": 0.13417,
+    "fully_supported_at_10": 0.25167
+  },
+  "bridge": {
+    "questions": 963,
+    "recall_at_2": 0.3254,
+    "recall_at_10": 0.53026,
+    "precision_at_10": 0.12908,
+    "fully_supported_at_10": 0.20872
+  },
+  "comparison": {
+    "questions": 237,
+    "recall_at_2": 0.38354,
+    "recall_at_10": 0.68284,
+    "precision_at_10": 0.15485,
+    "fully_supported_at_10": 0.42616
+  },
+  "control_shuffled_gold": {
+    "questions": 1200,
+    "recall_at_2": 0.0,
+    "recall_at_10": 0.0,
+    "precision_at_10": 0.0,
+    "fully_supported_at_10": 0.0
+  },
+  "citations": {
+    "resolved": 12000
+  },
+  "citations_resolved_rate": 1.0
+}

@@ -24,7 +24,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pyarrow.parquet as pq
+from pydantic import BaseModel, ConfigDict
 
+from pathquery.core import Fact
 from pathquery.corpus.hotpot import Paragraph, read_split
 
 BATCH_ROWS = 2_000
@@ -174,6 +176,44 @@ def build_corpus(raw: Path, out: Path, spec: CorpusSpec) -> BuildReport:
         encoding="utf-8",
     )
     return report
+
+
+class ScoredQuestion(BaseModel):
+    """A question as the build wrote it, read back with its types intact."""
+
+    model_config = ConfigDict(frozen=True)
+
+    question_id: str
+    question: str
+    answer: str
+    kind: str
+    level: str
+    supporting: tuple[Fact, ...]
+
+    @property
+    def gold(self) -> set[Fact]:
+        return set(self.supporting)
+
+
+def load_questions(path: Path) -> list[ScoredQuestion]:
+    questions: list[ScoredQuestion] = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            record = json.loads(line)
+            questions.append(
+                ScoredQuestion(
+                    question_id=record["id"],
+                    question=record["question"],
+                    answer=record["answer"],
+                    kind=record["type"],
+                    level=record["level"],
+                    supporting=tuple(
+                        Fact(document=f["document"], sentence=f["sentence"])
+                        for f in record["supporting"]
+                    ),
+                )
+            )
+    return questions
 
 
 def load_paragraphs(path: Path) -> dict[str, Paragraph]:
