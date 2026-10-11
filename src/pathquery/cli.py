@@ -119,5 +119,74 @@ def baseline_command(
     typer.echo(json.dumps(results, indent=2))
 
 
+@app.command("multihop")
+def multihop_command(
+    build: Annotated[Path, typer.Option()] = Path("data/build"),
+    evidence_dir: Annotated[Path, typer.Option("--evidence")] = Path("evidence"),
+    paragraphs_k: Annotated[int, typer.Option()] = 10,
+    hop_width: Annotated[int, typer.Option(help="Follow-up queries per question.")] = 3,
+) -> None:
+    """Follow what the first hop found, then score and check what comes back."""
+    from pathquery.core import Fact, Resolution, resolution_counts, score_evidence, shuffled_gold
+    from pathquery.core.controls import shifted_citations
+    from pathquery.corpus.build import load_paragraphs, load_questions
+    from pathquery.hops import answer_question
+    from pathquery.retrieve.lexical import ParagraphIndex
+
+    paragraphs = load_paragraphs(build / "paragraphs.jsonl")
+    corpus_text = {title: paragraph.text for title, paragraph in paragraphs.items()}
+    index = ParagraphIndex.load(build / "bm25")
+    questions = load_questions(build / "questions.jsonl")
+
+    retrieved: dict[str, list[Fact]] = {}
+    gold: dict[str, set[Fact]] = {}
+    citations: list[Citation] = []
+    uncertain = 0
+    for question in questions:
+        result = answer_question(
+            question.question,
+            index,
+            paragraphs,
+            paragraphs_k=paragraphs_k,
+            hop_width=hop_width,
+        )
+        retrieved[question.question_id] = result.facts
+        gold[question.question_id] = question.gold
+        citations.extend(result.citations)
+        uncertain += 1 if result.uncertain else 0
+
+    by_kind = {}
+    for kind in ("bridge", "comparison"):
+        ids = {q.question_id for q in questions if q.kind == kind}
+        by_kind[kind] = score_evidence(
+            {q: retrieved[q] for q in ids}, {q: gold[q] for q in ids}
+        ).as_dict()
+
+    counts = resolution_counts(citations, corpus_text)
+    shifted = resolution_counts(shifted_citations(citations, 3), corpus_text)
+    resolved = counts.get(Resolution.RESOLVED, 0)
+    results = {
+        "label": "multi-hop",
+        "paragraphs_k": paragraphs_k,
+        "hop_width": hop_width,
+        "all": score_evidence(retrieved, gold).as_dict(),
+        "bridge": by_kind["bridge"],
+        "comparison": by_kind["comparison"],
+        "control_shuffled_gold": score_evidence(retrieved, shuffled_gold(gold, seed=7)).as_dict(),
+        "citations": {k.value: v for k, v in counts.items()},
+        "citations_resolved_rate": round(resolved / max(len(citations), 1), 5),
+        "control_shifted_offsets": {k.value: v for k, v in shifted.items()},
+        "control_shifted_resolved_rate": round(
+            shifted.get(Resolution.RESOLVED, 0) / max(len(citations), 1), 5
+        ),
+        "questions_flagged_uncertain": uncertain,
+    }
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    (evidence_dir / "multi-hop.json").write_text(
+        json.dumps(results, indent=2) + "\n", encoding="utf-8"
+    )
+    typer.echo(json.dumps(results, indent=2))
+
+
 if __name__ == "__main__":
     app()
