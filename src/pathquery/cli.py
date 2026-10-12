@@ -8,8 +8,9 @@ from typing import Annotated
 
 import typer
 
-from pathquery.core import Citation
+from pathquery.core import Citation, Fact
 from pathquery.corpus import CorpusSpec, build_corpus
+from pathquery.corpus.hotpot import Paragraph
 
 app = typer.Typer(
     add_completion=False,
@@ -44,6 +45,81 @@ def build_corpus_command(
     typer.echo(json.dumps(report.as_dict(), indent=2))
 
 
+def _keep_run(
+    evidence_dir: Path,
+    label: str,
+    retrieved: dict[str, list[Fact]],
+    citations_by_q: dict[str, list[Citation]],
+) -> None:
+    """Write what was retrieved, not only what it scored.
+
+    A summary cannot be checked against anything. With the evidence beside it,
+    every number in the summary can be recomputed from the annotations by
+    someone who does not trust the code that produced it.
+    """
+    import gzip
+
+    runs = evidence_dir / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    with gzip.open(runs / f"{label}.jsonl.gz", "wt", encoding="utf-8") as handle:
+        for question_id in sorted(retrieved):
+            handle.write(
+                json.dumps(
+                    {
+                        "qid": question_id,
+                        "retrieved": [
+                            {"document": f.document, "sentence": f.sentence}
+                            for f in retrieved[question_id]
+                        ],
+                        "citations": [
+                            {
+                                "document": c.document,
+                                "start": c.start,
+                                "end": c.end,
+                                "quoted": c.quoted,
+                            }
+                            for c in citations_by_q.get(question_id, [])
+                        ],
+                    }
+                )
+                + "\n"
+            )
+
+
+def _keep_cited_paragraphs(
+    evidence_dir: Path,
+    citations: list[Citation],
+    paragraphs: dict[str, Paragraph],
+) -> int:
+    """Commit the source text every citation points at, and nothing else.
+
+    The corpus is half a gigabyte and is rebuilt from a seed, so it is not in
+    the repository. The paragraphs that citations actually name are a few
+    thousand, and without them the central claim is unverifiable by anyone who
+    has not first spent twenty minutes downloading HotpotQA. HotpotQA is
+    CC BY-SA, so redistributing this slice is permitted; see ATTRIBUTION.md.
+    """
+    path = evidence_dir / "cited-paragraphs.jsonl"
+    # Merged with whatever is already there, never replacing it. Each run cites
+    # a different set, and a file holding only the last one leaves every other
+    # run's citations pointing at a document the repository does not contain.
+    existing: dict[str, list[str]] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            existing[record["title"]] = record["sentences"]
+
+    for title in {citation.document for citation in citations}:
+        paragraph = paragraphs.get(title)
+        if paragraph is not None:
+            existing[title] = list(paragraph.sentences)
+
+    with path.open("w", encoding="utf-8") as handle:
+        for title in sorted(existing):
+            handle.write(json.dumps({"title": title, "sentences": existing[title]}) + "\n")
+    return len(existing)
+
+
 @app.command("build-index")
 def build_index_command(
     build: Annotated[Path, typer.Option()] = Path("data/build"),
@@ -73,7 +149,7 @@ def baseline_command(
     This is the comparison every multi-hop number is published beside, so it is
     built first and kept.
     """
-    from pathquery.core import Fact, Resolution, resolution_counts, score_evidence, shuffled_gold
+    from pathquery.core import Resolution, resolution_counts, score_evidence, shuffled_gold
     from pathquery.corpus.build import load_paragraphs, load_questions
     from pathquery.retrieve.lexical import ParagraphIndex
     from pathquery.retrieve.sentences import select_evidence
@@ -87,10 +163,13 @@ def baseline_command(
     retrieved: dict[str, list[Fact]] = {}
     gold: dict[str, set[Fact]] = {}
     citations: list[Citation] = []
+    per_question: dict[str, list[Citation]] = {}
     for question, titles in zip(questions, ranked, strict=True):
         evidence = select_evidence(question.question, titles, paragraphs)
         retrieved[question.question_id] = [e.fact for e in evidence]
-        citations.extend(e.citation for e in evidence[:10])
+        mine = [e.citation for e in evidence[:10]]
+        per_question[question.question_id] = mine
+        citations.extend(mine)
         gold[question.question_id] = question.gold
 
     by_kind = {}
@@ -113,6 +192,8 @@ def baseline_command(
         "citations_resolved_rate": round(resolved / max(len(citations), 1), 5),
     }
     evidence_dir.mkdir(parents=True, exist_ok=True)
+    _keep_run(evidence_dir, "single-hop", retrieved, per_question)
+    _keep_cited_paragraphs(evidence_dir, citations, paragraphs)
     (evidence_dir / "single-hop.json").write_text(
         json.dumps(results, indent=2) + "\n", encoding="utf-8"
     )
@@ -127,7 +208,7 @@ def multihop_command(
     hop_width: Annotated[int, typer.Option(help="Follow-up queries per question.")] = 3,
 ) -> None:
     """Follow what the first hop found, then score and check what comes back."""
-    from pathquery.core import Fact, Resolution, resolution_counts, score_evidence, shuffled_gold
+    from pathquery.core import Resolution, resolution_counts, score_evidence, shuffled_gold
     from pathquery.core.controls import shifted_citations
     from pathquery.corpus.build import load_paragraphs, load_questions
     from pathquery.hops import answer_question
@@ -141,6 +222,7 @@ def multihop_command(
     retrieved: dict[str, list[Fact]] = {}
     gold: dict[str, set[Fact]] = {}
     citations: list[Citation] = []
+    per_question: dict[str, list[Citation]] = {}
     uncertain = 0
     for question in questions:
         result = answer_question(
@@ -152,6 +234,7 @@ def multihop_command(
         )
         retrieved[question.question_id] = result.facts
         gold[question.question_id] = question.gold
+        per_question[question.question_id] = result.citations
         citations.extend(result.citations)
         uncertain += 1 if result.uncertain else 0
 
@@ -182,6 +265,8 @@ def multihop_command(
         "questions_flagged_uncertain": uncertain,
     }
     evidence_dir.mkdir(parents=True, exist_ok=True)
+    _keep_run(evidence_dir, "multi-hop", retrieved, per_question)
+    _keep_cited_paragraphs(evidence_dir, citations, paragraphs)
     (evidence_dir / "multi-hop.json").write_text(
         json.dumps(results, indent=2) + "\n", encoding="utf-8"
     )
