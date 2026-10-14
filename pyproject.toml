@@ -8,11 +8,9 @@ license = { file = "LICENSE" }
 authors = [{ name = "Rajeev Chaurasia", email = "rajeevchaurasia.dev@gmail.com" }]
 dependencies = [
     "bm25s>=0.2",
-    "faiss-cpu>=1.9",
     "numpy>=2.0",
     "pyarrow>=17.0",
     "pydantic>=2.8",
-    "sentence-transformers>=3.0",
     "typer>=0.12",
 ]
 
@@ -31,38 +29,26 @@ packages = ["src/pathquery"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests", "evaluation", "script"]
+src = ["src", "tests", "script"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["pathquery", "evaluation", "script", "tests"]
+known-first-party = ["pathquery", "script", "tests"]
 
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["src", "tests", "script", "evaluation"]
+files = ["src", "tests", "script"]
 
 [[tool.mypy.overrides]]
-# faiss is a SWIG extension, and bm25s and pyarrow ship no py.typed marker;
-# the sentence-transformers stubs are partial rather than absent.
-module = [
-    "bm25s",
-    "bm25s.*",
-    "faiss",
-    "pyarrow",
-    "pyarrow.*",
-    "sentence_transformers",
-    "sentence_transformers.*",
-]
+# bm25s and pyarrow ship no py.typed marker.
+module = ["bm25s", "bm25s.*", "pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# tests/faiss is a directory rather than a marker because pytest imports every
-# test module while collecting, so a marker would still pull torch into the
-# faiss process and abort it. script/test.sh runs the two halves.
 
 [tool.coverage.run]
 source = ["src/pathquery"]
