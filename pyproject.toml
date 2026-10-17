@@ -1,7 +1,7 @@
 [project]
 name = "pathquery"
 version = "0.1.0"
-description = "Multi-hop evidence retrieval whose every citation is a verified byte range in the source, not a claim about one."
+description = "Multi-hop evidence retrieval whose every citation is a verified character range in the source, not a claim about one."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }

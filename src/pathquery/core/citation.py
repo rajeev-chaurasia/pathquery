@@ -2,8 +2,12 @@
 
 A citation here is not a reference to a document. It is a document and a
 half-open character range, together with the text that range is claimed to
-contain. Checking it is a comparison of bytes: either the corpus at that range
-is exactly the quoted string, or the citation is wrong.
+contain. Checking it is an exact string comparison: either the corpus at that
+range is the quoted text character for character, or the citation is wrong.
+
+The range counts characters, not bytes. HotpotQA is full of accented names, and
+in UTF-8 those take more than one byte each, so the two counts disagree after
+the first one in a paragraph. Characters are what a reader of the text sees.
 
 That strictness is the point. A fuzzy or normalised comparison would accept a
 span that is off by a few characters, and an off-by-few span is how a quote

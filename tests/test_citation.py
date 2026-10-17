@@ -1,7 +1,7 @@
 """Tests for the citation rule, written against spans counted by hand.
 
-This is the claim. A citation is a byte range and the check is a comparison of
-bytes, so the way it fails matters as much as the way it passes: an off-by-one
+This is the claim. A citation is a character range and the check is an exact
+string comparison, so the way it fails matters as much as the way it passes: an off-by-one
 span is how a quote gets attributed to the sentence beside the one it came
 from, and that must not be tolerated anywhere.
 """
@@ -33,6 +33,17 @@ def test_a_span_one_character_short_is_rejected() -> None:
 def test_a_span_shifted_by_one_is_rejected() -> None:
     """The failure that matters: nearly right is wrong."""
     assert resolve(cite(1, 13, "Ada Lovelace"), CORPUS) is Resolution.TEXT_MISMATCH
+
+
+def test_offsets_count_characters_not_bytes() -> None:
+    """'é' is one character and two UTF-8 bytes, so the counts part after it.
+
+    A producer counting bytes would place every span after the first accent in
+    a paragraph too far right, and this pins which of the two is meant.
+    """
+    corpus = {"b": "Beyoncé sang."}
+    assert resolve(cite(8, 12, "sang", document="b"), corpus) is Resolution.RESOLVED
+    assert resolve(cite(9, 13, "sang", document="b"), corpus) is Resolution.TEXT_MISMATCH
 
 
 def test_whitespace_is_not_normalised_away() -> None:
