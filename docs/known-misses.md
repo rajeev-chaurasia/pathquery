@@ -41,3 +41,12 @@ and it also finds the first word of any sentence that happens to follow a
 quotation mark. A named entity recogniser would do better, and the claim being
 tested is about whether following the first hop helps rather than about the
 extractor, so the crude version is what is measured.
+
+## The uncertainty flag never fires
+
+A question is flagged as uncertain when its best piece of evidence covers less
+than 0.15 of the question's terms. Over 1,200 questions it flagged none. The
+floor was set before the run and never tuned against anything, and sentence
+selection keeps the sentences with the most overlap, so the best one clears it
+every time. As configured the flag does nothing, and nothing here should be read
+as evidence that it works.
